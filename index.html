@@ -64,9 +64,13 @@ button.btn.sec{background:var(--panel2);color:var(--text);border:1px solid var(-
 #authbox button{width:100%}
 #autherr{color:var(--red);font-size:12px;margin:6px 0}
 .switch{color:var(--dim);font-size:12px;margin-top:10px;cursor:pointer;text-align:center}
+#toasts{position:fixed;top:14px;right:14px;z-index:99;display:flex;flex-direction:column;gap:8px;max-width:300px}
+.toast{background:var(--panel2);border:1px solid var(--amber);border-left:4px solid var(--amber);padding:10px 12px;border-radius:6px;font-size:13px;box-shadow:0 4px 14px #0008}
+.toast.high{border-color:var(--red)}
 </style>
 </head>
 <body>
+<div id="toasts"></div>
 <div id="authwrap" style="display:none">
   <div id="authbox"></div>
 </div>
@@ -108,6 +112,12 @@ const auth = getAuth(app);
 const fdb = getFirestore(app);
 
 const DIVS=["Patrol Division","Traffic Division","Detective Division","SWAT","Internal Affairs","Training Division","Communications"];
+const RANKS=["Police Commissioner","Chief of Police","Assistant Chief of Police","Deputy Chief of Police","Police Commander","Police Captain II","Police Captain I","Police Lieutenant II","Police Lieutenant I","Police Sergeant II","Police Sergeant I","Probationary Sergeant","Police Detective III","Police Detective II","Police Detective I","Intelligent Officer","Police Officer III+1","Police Officer III","Police Officer II","Police Officer I","Probationary Officer"];
+const COMMAND_RANKS=["Police Commissioner","Chief of Police","Assistant Chief of Police","Deputy Chief of Police","Police Commander"];
+const DUTY=["Duty","Sibuk","Off Duty"];
+const VEH=["Dipakai","Tidak Dipakai","Perbaikan"];
+const stPill=s=>s==="Duty"?"duty":s==="Sibuk"?"leave":"off";
+const vPill=s=>(s==="Dipakai"||s==="In Use")?"use":(s==="Perbaikan"||s==="Maintenance")?"maint":"avail";
 const COLS=["members","mdt","dispatch","reports","equip","vehicles","academy"];
 let cache={members:[],mdt:[],dispatch:[],reports:[],equip:[],vehicles:[],academy:[],users:[]};
 let meta={online:true,announcement:"Selamat datang di sistem SAPD. Patuhi SOP setiap saat.",activity:["Sistem diinisialisasi."]};
@@ -155,7 +165,10 @@ window.doLogout=function(){ subs.forEach(u=>u()); subs=[]; signOut(auth); };
 // ---------- DATA WIRING ----------
 function subscribeAll(){
   subs.forEach(u=>u()); subs=[];
-  COLS.forEach(c=>subs.push(onSnapshot(collection(fdb,c),snap=>{cache[c]=snap.docs.map(d=>({id:d.id,...d.data()}));renderView();})));
+  COLS.forEach(c=>{let first=true;subs.push(onSnapshot(collection(fdb,c),snap=>{
+    cache[c]=snap.docs.map(d=>({id:d.id,...d.data()}));
+    if(c==='dispatch'&&!first) snap.docChanges().forEach(ch=>{if(ch.type==='added'&&ch.doc.data().createdBy!==me.uid) notify(ch.doc.data());});
+    first=false;renderView();}));});
   subs.push(onSnapshot(collection(fdb,'users'),snap=>{cache.users=snap.docs.map(d=>({id:d.id,...d.data()}));renderView();}));
   subs.push(onSnapshot(doc(fdb,'meta','app'),s=>{if(s.exists())meta={...meta,...s.data()};renderView();}));
   subs.push(onSnapshot(doc(fdb,'admin_log','log'),s=>{if(s.exists())admin={...admin,...s.data()};renderView();}));
@@ -181,6 +194,15 @@ onAuthStateChanged(auth,user=>{
   });
 });
 
+// ---------- NOTIFICATIONS ----------
+function beep(){try{const a=new (window.AudioContext||window.webkitAudioContext)();const o=a.createOscillator(),g=a.createGain();o.connect(g);g.connect(a.destination);o.frequency.value=880;g.gain.value=.15;o.start();setTimeout(()=>{o.stop();a.close();},400);}catch(e){}}
+function toast(html,cls){const t=document.createElement('div');t.className='toast '+(cls||'');t.innerHTML=html;document.getElementById('toasts').appendChild(t);setTimeout(()=>t.remove(),10000);}
+function notify(d){
+  toast(`<b>🚨 [${esc(d.code)}] ${esc(d.type)}</b><br>${esc(d.loc)} • ${esc(d.priority)}<br><span class="note">Unit: ${esc(d.unit)||'-'}</span>`,d.priority==='HIGH'?'high':'');
+  beep();
+  if('Notification' in window&&Notification.permission==='granted') new Notification('🚨 ['+d.code+'] '+d.type,{body:d.loc+' • '+d.priority});
+}
+window.askNotif=()=>{Notification.requestPermission().then(()=>renderView());};
 // ---------- WRITE HELPERS ----------
 async function addDoc_(col,obj){ await addDoc(collection(fdb,col),obj); }
 async function delDoc_(col,id){ await deleteDoc(doc(fdb,col,id)); }
@@ -195,23 +217,26 @@ const topbar=document.getElementById('topbar');
 let state={tab:'dash',div:DIVS[0]};
 const canWrite=()=>me.role==='officer'||me.role==='admin';
 const isAdmin=()=>me.role==='admin';
+const canCmd=()=>isAdmin()||COMMAND_RANKS.includes(me.rank);
 
-function roleBadge(){ return isAdmin()?'<span class="rolepill role-admin">Admin</span>':'<span class="rolepill role-officer">Officer</span>'; }
-function renderTopbar(){ topbar.innerHTML=`<div>Login sebagai: <b>${esc(me.name)}</b></div><div>${roleBadge()}</div>`; }
+function roleBadge(){ return (isAdmin()?'<span class="rolepill role-admin">Admin</span> ':'<span class="rolepill role-officer">Officer</span> ')+(me.rank?`<span class="rolepill role-officer">${esc(me.rank)}</span>`:''); }
+function renderTopbar(){ topbar.innerHTML=`<div>Login sebagai: <b>${esc(me.name)}</b></div><div>${('Notification' in window&&Notification.permission==='default')?'<button class="btn sec" style="padding:3px 8px;font-size:11px" onclick="askNotif()">🔔 Aktifkan notifikasi</button> ':''}${roleBadge()}</div>`; }
 function roForm(){ return ''; }
-function adminOnly(html){ return isAdmin()?html:'<div class="ro-banner">Bagian ini khusus role Admin.</div>'; }
+function adminOnly(html){ return canCmd()?html:'<div class="ro-banner">Bagian ini khusus rank Police Commander ke atas & Admin.</div>'; }
 
 const views={
 dash(){
-  const duty=cache.members.filter(m=>m.status==="Duty").length;
-  const avail=cache.vehicles.filter(v=>v.status==="Available").length;
+  const duty=cache.members.filter(m=>m.status==="Duty"), busy=cache.members.filter(m=>m.status==="Sibuk");
+  const avail=cache.vehicles.filter(v=>v.status==="Tidak Dipakai"||v.status==="Available").length;
   return `<h1>Dashboard</h1><div class="sub">Ringkasan operasional SAPD saat ini.</div>
   <div class="grid">
     <div class="card"><div class="n ${meta.online?'status-on':'status-off'}">${meta.online?'🟢 ONLINE':'🔴 OFFLINE'}</div><div class="l">Status SAPD</div></div>
-    <div class="card"><div class="n">${cache.members.length}</div><div class="l">Anggota Aktif</div></div>
-    <div class="card"><div class="n">${duty}</div><div class="l">Sedang Duty</div></div>
+    <div class="card"><div class="n">${cache.members.length}</div><div class="l">Total Anggota</div></div>
+    <div class="card"><div class="n">${duty.length}</div><div class="l">Sedang Duty</div></div>
+    <div class="card"><div class="n">${busy.length}</div><div class="l">Sibuk</div></div>
     <div class="card"><div class="n">${avail}</div><div class="l">Kendaraan Tersedia</div></div>
   </div>
+  <div class="card" style="margin-bottom:16px"><b>👮 Anggota Aktif Sekarang</b><div class="note">${[...duty,...busy].map(m=>esc(m.callsign||m.name)+' ('+m.status+')').join(' • ')||'Belum ada yang duty.'}</div></div>
   <div class="card" style="margin-bottom:16px"><b>📢 Pengumuman Terbaru</b>
     <textarea id="ann" style="margin-top:8px">${esc(meta.announcement)}</textarea>
     <div style="margin-top:8px"><button class="btn sec" onclick="setAnn()">Simpan Pengumuman</button>
@@ -220,19 +245,21 @@ dash(){
   <div class="card"><b>🕓 Aktivitas Terakhir</b><ul>${meta.activity.map(a=>`<li class="note">${esc(a)}</li>`).join('')}</ul></div>`;
 },
 members(){
-  return `<h1>Data Anggota</h1><div class="sub">Roster lengkap anggota SAPD.</div>
-  <form class="inline" onsubmit="return addMember(event)">
-    <input name="name" placeholder="Nama karakter" required><input name="rank" placeholder="Rank" required>
+  return `<h1>Data Anggota</h1><div class="sub">Identitas anggota & status duty (ubah status lewat dropdown). Tambah/hapus anggota & ubah rank khusus Command.</div>
+  <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addMember(event)">
+    <input name="name" placeholder="Nama karakter" required><input name="cid" placeholder="Citizen ID" required>
+    <input name="phone" placeholder="No. HP"><input name="callsign" placeholder="Callsign (Adam-21)">
+    <input name="badge" placeholder="Badge" required>
+    <select name="rank">${RANKS.map(r=>`<option>${r}</option>`).join('')}</select>
     <select name="division">${DIVS.map(d=>`<option>${d}</option>`).join('')}</select>
-    <input name="badge" placeholder="Badge/ID" required>
-    <select name="status"><option>Duty</option><option>Off Duty</option><option>Leave</option></select>
-    <input name="hours" type="number" placeholder="Jam duty" value="0"><button class="btn">Tambah Anggota</button>
+    <button class="btn">Tambah Anggota</button>
   </form>
-  <div class="tblwrap"><table><tr><th>Nama</th><th>Rank</th><th>Division</th><th>Badge</th><th>Status</th><th>Jam Duty</th><th>Riwayat</th><th></th></tr>
-  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.rank)}</td><td>${esc(m.division)}</td><td class="mono">${esc(m.badge)}</td>
-  <td><span class="pill ${m.status==='Duty'?'duty':m.status==='Leave'?'leave':'off'}">${m.status}</span></td>
-  <td>${m.dutyHours}h</td><td class="note">${(m.promo||[]).join('; ')||'-'}</td>
-  <td><span class="del" onclick="delDoc('members','${m.id}')">Hapus</span></td></tr>`).join('')}
+  <div class="tblwrap"><table><tr><th>Nama</th><th>CID</th><th>HP</th><th>Callsign</th><th>Badge</th><th>Rank</th><th>Division</th><th>Status</th><th>Jam Duty</th><th>Riwayat</th><th></th></tr>
+  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td class="mono">${esc(m.cid)||'-'}</td><td>${esc(m.phone)||'-'}</td><td class="mono">${esc(m.callsign)||'-'}</td><td class="mono">${esc(m.badge)}</td>
+  <td>${esc(m.rank)}</td><td>${esc(m.division)}</td>
+  <td><span class="pill ${stPill(m.status)}">${esc(m.status)}</span><br><select onchange="setStatus('${m.id}',this.value)">${DUTY.map(x=>`<option ${x===m.status?'selected':''}>${x}</option>`).join('')}</select></td>
+  <td>${(+m.dutyHours||0).toFixed(1)}h</td><td class="note">${(m.promo||[]).join('; ')||'-'}</td>
+  <td>${canCmd()?`<span class="del" onclick="delDoc('members','${m.id}')">Hapus</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 mdt(){
@@ -265,7 +292,7 @@ dispatch(){
     <button class="btn">Buat Dispatch</button>
   </form>
   <div class="tblwrap"><table><tr><th>Kode</th><th>Jenis</th><th>Lokasi</th><th>Prioritas</th><th>Unit</th><th>Status</th><th></th></tr>
-  ${cache.dispatch.map(d=>`<tr><td class="mono">${esc(d.code)}</td><td>${esc(d.type)}</td><td>${esc(d.loc)}</td>
+  ${[...cache.dispatch].sort((a,b)=>(b.ts||0)-(a.ts||0)).map(d=>`<tr><td class="mono">${esc(d.code)}</td><td>${esc(d.type)}</td><td>${esc(d.loc)}</td>
   <td><span class="pill ${d.priority==='HIGH'?'high':d.priority==='MEDIUM'?'med':'low'}">${d.priority}</span></td>
   <td>${esc(d.unit)}</td><td><span class="pill ${d.status==='ACTIVE'?'active':'avail'}">${d.status}</span></td>
   <td><span class="del" onclick="delDoc('dispatch','${d.id}')">Hapus</span></td></tr>`).join('')}
@@ -290,7 +317,7 @@ divisions(){
   <div class="divtabs">${DIVS.map(d=>`<button class="${d===state.div?'on':''}" onclick="setDiv('${d.replace(/'/g,"")}')">${d}</button>`).join('')}</div>
   <div class="tblwrap"><table><tr><th>Nama</th><th>Rank</th><th>Badge</th><th>Status</th><th>Jam Duty</th></tr>
   ${list.length?list.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.rank)}</td><td class="mono">${esc(m.badge)}</td>
-  <td><span class="pill ${m.status==='Duty'?'duty':m.status==='Leave'?'leave':'off'}">${m.status}</span></td><td>${m.dutyHours}h</td></tr>`).join('')
+  <td><span class="pill ${stPill(m.status)}">${m.status}</span></td><td>${m.dutyHours}h</td></tr>`).join('')
   :'<tr><td colspan="5" class="note">Belum ada anggota di divisi ini.</td></tr>'}
   </table></div>`;
 },
@@ -309,15 +336,14 @@ equip(){
   </table></div>`;
 },
 vehicles(){
-  return `<h1>Vehicle Management</h1><div class="sub">Status armada kendaraan SAPD.</div>
+  return `<h1>Vehicle Management</h1><div class="sub">Tambah unit dan atur status lewat dropdown.</div>
   <form class="inline" onsubmit="return addVeh(event)">
-    <input name="unit" placeholder="Unit code (SAPD-04)" required><input name="model" placeholder="Model" required>
-    <select name="status"><option>Available</option><option>In Use</option><option>Maintenance</option></select>
-    <button class="btn">Tambah Kendaraan</button>
+    <input name="unit" placeholder="Unit (SAPD-04)" required><input name="model" placeholder="Model" required>
+    <select name="status">${VEH.map(x=>`<option>${x}</option>`).join('')}</select><button class="btn">Tambah Unit</button>
   </form>
   <div class="tblwrap"><table><tr><th>Unit</th><th>Model</th><th>Status</th><th></th></tr>
   ${cache.vehicles.map(v=>`<tr><td class="mono">${esc(v.unit)}</td><td>${esc(v.model)}</td>
-  <td><span class="pill ${v.status==='Available'?'avail':v.status==='In Use'?'use':'maint'}">${v.status}</span></td>
+  <td><span class="pill ${vPill(v.status)}">${esc(v.status)}</span> <select onchange="setVehStatus('${v.id}',this.value)">${VEH.map(x=>`<option ${x===v.status?'selected':''}>${x}</option>`).join('')}</select></td>
   <td><span class="del" onclick="delDoc('vehicles','${v.id}')">Hapus</span></td></tr>`).join('')}
   </table></div>`;
 },
@@ -335,9 +361,9 @@ academy(){
   </table></div>`;
 },
 command(){
-  const body=`<div class="tblwrap"><table><tr><th>Nama</th><th>Rank</th><th>Division</th><th>Promosi/Demosi (rank baru)</th><th>Pindah Divisi</th></tr>
+  const body=`<div class="tblwrap"><table><tr><th>Nama</th><th>Rank</th><th>Division</th><th>Ubah Rank (roster)</th><th>Pindah Divisi</th></tr>
   ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.rank)}</td><td>${esc(m.division)}</td>
-  <td><form class="inline" style="margin:0;padding:0;background:none;border:none" onsubmit="return promote(event,'${m.id}')"><input name="rank" placeholder="Rank baru" style="width:110px"><button class="btn sec" style="padding:5px 10px">Set</button></form></td>
+  <td><form class="inline" style="margin:0;padding:0;background:none;border:none" onsubmit="return promote(event,'${m.id}')"><select name="rank" style="width:170px"><option value="">-pilih rank-</option>${RANKS.map(r=>`<option ${r===m.rank?'selected':''}>${r}</option>`).join('')}</select><button class="btn sec" style="padding:5px 10px">Set</button></form></td>
   <td><select onchange="reassign('${m.id}',this.value)"><option value="">-pilih-</option>${DIVS.map(d=>`<option ${d===m.division?'selected':''}>${d}</option>`).join('')}</select></td></tr>`).join('')}
   </table></div>
   <div class="grid" style="grid-template-columns:1fr 1fr">
@@ -350,18 +376,21 @@ command(){
       <ul>${admin.leave.map(l=>`<li class="note">${esc(l.name)} — ${esc(l.reason)} <span class="del" onclick="approveLeave('${l.id}')">Setujui</span></li>`).join('')||'<li class="note">Tidak ada pengajuan.</li>'}</ul>
     </div>
   </div>
-  <div class="card" style="margin-top:16px"><b>👤 Kelola Akun</b><div class="note">Approve akun baru & atur permission (role) tiap anggota.</div>
-  <div class="tblwrap"><table><tr><th>Nama</th><th>Email</th><th>Role</th><th>Ubah</th></tr>
-  ${cache.users.map(u=>`<tr><td>${esc(u.name)}</td><td class="note">${esc(u.email)}</td><td><span class="pill ${u.role}">${u.role}</span></td>
-  <td><select onchange="setRole('${u.id}',this.value)"><option value="">-pilih-</option><option value="pending">pending (tanpa akses)</option><option value="officer">officer (akses normal)</option><option value="admin">admin (akses penuh)</option></select></td></tr>`).join('')}
+  <div class="card" style="margin-top:16px"><b>👤 Kelola Akun</b><div class="note">Role akun (admin/officer/pending) hanya bisa diubah Admin. Rank akun bisa diatur Commander ke atas.</div>
+  <div class="tblwrap"><table><tr><th>Nama</th><th>Email</th><th>Role Akun</th><th>Rank Akun</th></tr>
+  ${cache.users.map(u=>`<tr><td>${esc(u.name)}</td><td class="note">${esc(u.email)}</td>
+  <td><span class="pill ${u.role}">${u.role}</span> <select ${isAdmin()?'':'disabled'} onchange="setRole('${u.id}',this.value)"><option value="">ubah</option><option value="pending">pending</option><option value="officer">officer</option><option value="admin">admin</option></select></td>
+  <td>${esc(u.rank||'-')}<br><select onchange="setRank('${u.id}',this.value)"><option value="">set rank</option>${RANKS.map(r=>`<option>${r}</option>`).join('')}</select></td></tr>`).join('')}
   </table></div></div>
   <div class="card" style="margin-top:16px"><b>🕓 Activity Log</b><ul>${meta.activity.map(a=>`<li class="note">${esc(a)}</li>`).join('')}</ul></div>`;
-  return `<h1>Command Panel</h1><div class="sub">Khusus role Admin — promosi, roster, punishment, leave, kelola akun.</div>${adminOnly(body)}`;
+  return `<h1>Command Panel</h1><div class="sub">Khusus rank Police Commander ke atas & Admin.</div>${adminOnly(body)}`;
 }
 };
 
 function renderView(){
   renderTopbar();
+  const cb=document.querySelector('#nav button[data-t="command"]'); if(cb) cb.style.display=canCmd()?'':'none';
+  if(state.tab==='command'&&!canCmd()) state.tab='dash';
   document.querySelectorAll('#nav button[data-t]').forEach(b=>b.classList.toggle('active',b.dataset.t===state.tab));
   main.innerHTML=views[state.tab]();
 }
@@ -370,21 +399,27 @@ window.renderView=renderView;
 
 window.setAnn=()=>{log('Pengumuman diperbarui.');saveMeta({announcement:document.getElementById('ann').value});};
 window.toggleOnline=()=>{const v=!meta.online;log('Status SAPD diubah menjadi '+(v?'ONLINE':'OFFLINE')+'.');saveMeta({online:v});};
-window.addMember=(e)=>{e.preventDefault();const f=e.target;addDoc_('members',{name:f.name.value,rank:f.rank.value,division:f.division.value,badge:f.badge.value,status:f.status.value,dutyHours:+f.hours.value||0,promo:[]});log('Anggota baru ditambahkan: '+f.name.value);f.reset();return false;};
+window.addMember=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('members',{name:f.name.value,cid:f.cid.value,phone:f.phone.value,callsign:f.callsign.value,badge:f.badge.value,rank:f.rank.value,division:f.division.value,status:'Off Duty',dutyHours:0,promo:[]});log('Anggota baru ditambahkan: '+f.name.value);f.reset();return false;};
 window.addMdt=(e)=>{e.preventDefault();const f=e.target;addDoc_('mdt',{name:f.name.value,wanted:f.wanted.value==='true',criminal:f.criminal.value,arrests:f.arrests.value,tickets:f.tickets.value,evidence:f.evidence.value,notes:f.notes.value});log('Record MDT ditambahkan untuk '+f.name.value);f.reset();return false;};
-window.addDispatch=(e)=>{e.preventDefault();const f=e.target;addDoc_('dispatch',{code:f.code.value,type:f.type.value,loc:f.loc.value,priority:f.priority.value,unit:f.unit.value,status:f.status.value});log('Dispatch baru: '+f.code.value+' - '+f.type.value);f.reset();return false;};
+window.addDispatch=(e)=>{e.preventDefault();const f=e.target;addDoc_('dispatch',{code:f.code.value,type:f.type.value,loc:f.loc.value,priority:f.priority.value,unit:f.unit.value,status:f.status.value,createdBy:me.uid,ts:Date.now()});log('Dispatch baru: '+f.code.value+' - '+f.type.value);f.reset();return false;};
 window.addReport=(e)=>{e.preventDefault();const f=e.target;addDoc_('reports',{type:f.type.value,officer:f.officer.value,subject:f.subject.value,details:f.details.value,date:new Date().toLocaleString()});log('Laporan dibuat: '+f.type.value+' oleh '+f.officer.value);f.reset();return false;};
 window.addEquip=(e)=>{e.preventDefault();const f=e.target;addDoc_('equip',{item:f.item.value,cat:f.cat.value,status:f.status.value,holder:f.holder.value});f.reset();return false;};
 window.toggleEquip=(id)=>{const it=cache.equip.find(x=>x.id===id);const ns=it.status==='Available'?'Dipinjam':'Available';log((ns==='Dipinjam'?'Item diambil: ':'Item dikembalikan: ')+it.item);updDoc_('equip',id,{status:ns});};
 window.addVeh=(e)=>{e.preventDefault();const f=e.target;addDoc_('vehicles',{unit:f.unit.value,model:f.model.value,status:f.status.value});f.reset();return false;};
 window.addTrainee=(e)=>{e.preventDefault();const f=e.target;addDoc_('academy',{name:f.name.value,status:f.status.value,score:f.score.value||'-'});f.reset();return false;};
-window.promote=(e,id)=>{e.preventDefault();const rank=e.target.rank.value;if(!rank)return false;const m=cache.members.find(x=>x.id===id);const promo=[...(m.promo||[]),m.rank+' → '+rank+' ('+new Date().toLocaleDateString()+')'];log(m.name+' rank diubah menjadi '+rank);updDoc_('members',id,{rank,promo});return false;};
-window.reassign=(id,div)=>{if(!div)return;const m=cache.members.find(x=>x.id===id);log(m.name+' dipindah ke '+div);updDoc_('members',id,{division:div});};
+window.promote=(e,id)=>{e.preventDefault();if(!canCmd())return false;const rank=e.target.rank.value;if(!rank)return false;const m=cache.members.find(x=>x.id===id);const promo=[...(m.promo||[]),m.rank+' → '+rank+' ('+new Date().toLocaleDateString()+')'];log(m.name+' rank diubah menjadi '+rank);updDoc_('members',id,{rank,promo});return false;};
+window.reassign=(id,div)=>{if(!div||!canCmd())return;const m=cache.members.find(x=>x.id===id);log(m.name+' dipindah ke '+div);updDoc_('members',id,{division:div});};
 window.addPunish=(e)=>{e.preventDefault();const f=e.target;const list=[{id:'p'+Date.now(),name:f.name.value,reason:f.reason.value},...admin.punish];log('Punishment: '+f.name.value+' - '+f.reason.value);saveAdmin({punish:list});f.reset();return false;};
 window.addLeave=(e)=>{e.preventDefault();const f=e.target;const list=[{id:'lv'+Date.now(),name:f.name.value,reason:f.reason.value},...admin.leave];saveAdmin({leave:list});f.reset();return false;};
 window.approveLeave=(id)=>{saveAdmin({leave:admin.leave.filter(l=>l.id!==id)});log('Leave request disetujui.');};
 window.setDiv=(d)=>{state.div=d;renderView();};
-window.setRole=(uid,role)=>{if(!role)return;updDoc_('users',uid,{role}).then(()=>log('Role diubah menjadi '+role+' untuk 1 akun.'));};
+window.setStatus=(id,st)=>{const m=cache.members.find(x=>x.id===id);const p={status:st};
+  if(m.status==='Duty'&&m.dutyStart){p.dutyHours=Math.round(((+m.dutyHours||0)+(Date.now()-m.dutyStart)/36e5)*10)/10;p.dutyStart=null;}
+  if(st==='Duty')p.dutyStart=Date.now();
+  log(m.name+' → '+st);updDoc_('members',id,p);};
+window.setVehStatus=(id,st)=>{const v=cache.vehicles.find(x=>x.id===id);log(v.unit+' → '+st);updDoc_('vehicles',id,{status:st});};
+window.setRank=(uid,rank)=>{if(!rank||!canCmd())return;updDoc_('users',uid,{rank}).then(()=>log('Rank akun diubah menjadi '+rank));};
+window.setRole=(uid,role)=>{if(!role||!isAdmin())return;updDoc_('users',uid,{role}).then(()=>log('Role diubah menjadi '+role+' untuk 1 akun.'));};
 </script>
 </body>
 </html>
