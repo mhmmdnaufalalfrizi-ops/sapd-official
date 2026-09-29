@@ -573,7 +573,7 @@ members(){
     <select name="dept">${DEPTS.map(d=>`<option>${d}</option>`).join('')}</select>
     <select name="rank">${ranksList().map(r=>`<option>${r}</option>`).join('')}</select>
     <select name="position"><option value="">No position</option>${positionsList().map(p=>`<option>${p}</option>`).join('')}</select>
-    <select name="division">${divsList().map(d=>`<option>${d}</option>`).join('')}</select>
+    <select name="division"><option value="">No division</option>${divsList().map(d=>`<option>${d}</option>`).join('')}</select>
     <button class="btn">Add Member</button>
   </form>
   ${body}`;
