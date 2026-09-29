@@ -486,6 +486,28 @@ function renderTopbar(){
 function cmdOnly(html){return canCmd()?html:'<div class="ro-banner">This section is restricted to Police Commander rank and above, or Admin.</div>';}
 
 const views={
+dash(){
+  const duty=cache.users.filter(u=>u.status==="On Duty"),busy=cache.users.filter(u=>u.status==="Busy");
+  const nm=u=>(cache.members.find(m=>m.id===(u.memberId||u.id))||{}).callsign||u.name;
+  const avail=cache.vehicles.filter(v=>v.status==="Available").length;
+  const calls=cache.dispatch.filter(d=>d.status==='ACTIVE').length;
+  return `<h1>Dashboard</h1><div class="sub">Current SAPD operations overview.</div>
+  <div class="grid">
+    <div class="card"><div class="n ${meta.online?'status-on':'status-off'}">${meta.online?'🟢 ONLINE':'🔴 OFFLINE'}</div><div class="l">SAPD Status</div></div>
+    <div class="card"><div class="n">${cache.members.length}</div><div class="l">Total Members</div></div>
+    <div class="card"><div class="n">${duty.length}</div><div class="l">On Duty</div></div>
+    <div class="card"><div class="n">${busy.length}</div><div class="l">Busy</div></div>
+    <div class="card"><div class="n">${avail}</div><div class="l">Vehicles Available</div></div>
+    <div class="card"><div class="n">${calls}</div><div class="l">Active Calls</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px"><b>👮 Active Officers</b><div class="note">${[...duty,...busy].map(u=>esc(nm(u))+' ('+u.status+')').join(' • ')||'Nobody is on duty.'}</div></div>
+  <div class="card" style="margin-bottom:16px"><b>📢 Latest Announcement</b>
+    <textarea id="ann" ${canCmd()?'':'readonly'} style="margin-top:8px">${esc(meta.announcement)}</textarea>
+    <div style="margin-top:8px;${canCmd()?'':'display:none'}"><button class="btn sec" onclick="setAnn()">Save Announcement</button>
+    <button class="btn sec" onclick="toggleOnline()">Set SAPD ${meta.online?'Offline':'Online'}</button></div>
+  </div>
+  <div class="card"><b>🕓 Recent Activity</b><ul>${cache.activity.map(a=>`<li class="note">${esc(a.msg)}</li>`).join('')}</ul></div>`;
+},
 profile(){
   const mine=cache.members.find(x=>x.id===me.uid);const v=k=>esc(mine?mine[k]:'');
   return `<h1>My Profile</h1><div class="sub">Your own contact details. Department, division and rank are assigned by Command.</div>
