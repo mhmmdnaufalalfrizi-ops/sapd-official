@@ -132,6 +132,8 @@ const divsList=()=>{const extra=(perm.divisions||[]).filter(d=>!DIVS_BASE.includ
 const cmdRanksList=()=>perm.cmdRanks!==undefined?perm.cmdRanks:COMMAND_RANKS_BASE;
 const cmdDivsList=()=>perm.cmdDivisions!==undefined?perm.cmdDivisions:[];
 const myDivision=()=>(cache.members.find(x=>x.id===me.uid)||{}).division||'';
+const POSITIONS_BASE=[...DEPTS.flatMap(s=>["Commanding "+s,"Watch Commander "+s,"Supervisor "+s,"Assistant Supervisor "+s]),"Senior Officer","Junior Officer","Probationary Officer"];
+const positionsList=()=>{const extra=(perm.positions||[]).filter(p=>!POSITIONS_BASE.includes(p));return [...POSITIONS_BASE,...extra];};
 const DUTY=["On Duty","Busy","Off Duty"];
 const VEH=["Available","In Use","Maintenance"];
 const FREQS=[{id:'01',label:'GLOBAL',grp:'Global'},
@@ -538,19 +540,20 @@ profile(){
      <input name="badge" value="${v('badge')}" placeholder="Badge" required>
      <button class="btn">Save Profile</button>
    </form>
-   <div class="note" style="margin-top:10px">Department: <b>${esc(mine&&mine.dept)||'Unassigned'}</b> • Division: <b>${esc(mine&&mine.division)||'Unassigned'}</b> • Rank: <b>${esc(mine&&mine.rank)||'Unassigned'}</b></div>
+   <div class="note" style="margin-top:10px">Department: <b>${esc(mine&&mine.dept)||'Unassigned'}</b> • Division: <b>${esc(mine&&mine.division)||'Unassigned'}</b> • Position: <b>${esc(mine&&mine.position)||'Unassigned'}</b> • Rank: <b>${esc(mine&&mine.rank)||'Unassigned'}</b></div>
   </div>`;
 },
 members(){
   const tabs=[...DEPTS,'Unassigned','By Division'];
   const cur=state.rtab;
-  const rows=(list)=>`<div class="tblwrap"><table><tr><th>Name</th><th>Address</th><th>Phone</th><th>Callsign</th><th>Badge</th><th>Rank</th><th>Division</th><th>Status</th><th>Duty Hours</th>${canCmd()?'<th>Move to Dept.</th><th>Move to Division</th><th>Set Rank</th><th></th>':''}</tr>
+  const rows=(list)=>`<div class="tblwrap"><table><tr><th>Name</th><th>Address</th><th>Phone</th><th>Callsign</th><th>Badge</th><th>Rank</th><th>Position</th><th>Division</th><th>Status</th><th>Duty Hours</th>${canCmd()?'<th>Move to Dept.</th><th>Move to Division</th><th>Set Rank</th><th>Set Position</th><th></th>':''}</tr>
   ${list.length?list.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.address)||'-'}</td><td>${esc(m.phone)||'-'}</td><td class="mono">${esc(m.callsign)||'-'}</td><td class="mono">${esc(m.badge)||'-'}</td>
-  <td>${esc(m.rank)||'<span class="note">Unassigned</span>'}</td><td>${esc(m.division)||'<span class="note">Unassigned</span>'}</td>
+  <td>${esc(m.rank)||'<span class="note">Unassigned</span>'}</td><td>${esc(m.position)||'<span class="note">Unassigned</span>'}</td><td>${esc(m.division)||'<span class="note">Unassigned</span>'}</td>
   <td><span class="pill ${stPill(stOf(m))}">${stOf(m)}</span>${uOf(m)?'':'<br><span class="note">account not linked</span>'}</td><td>${hrsOf(m)}</td>
   ${canCmd()?`<td><select onchange="setDept('${m.id}',this.value)"><option value="">-move-</option>${DEPTS.map(d=>`<option ${d===m.dept?'selected':''}>${d}</option>`).join('')}</select></td>
   <td><select onchange="reassign('${m.id}',this.value)"><option value="">-move-</option>${divsList().map(d=>`<option ${d===m.division?'selected':''}>${d}</option>`).join('')}</select></td>
   <td><select onchange="setRankDirect('${m.id}',this.value)"><option value="">-set-</option>${ranksList().map(r=>`<option ${r===m.rank?'selected':''}>${r}</option>`).join('')}</select></td>
+  <td><select onchange="setPosition('${m.id}',this.value)"><option value="">-set-</option>${positionsList().map(p=>`<option ${p===m.position?'selected':''}>${p}</option>`).join('')}</select></td>
   <td><span class="del" onclick="delDoc('members','${m.id}')">Delete</span></td>`:''}</tr>`).join(''):'<tr><td colspan="12" class="note">No members here yet.</td></tr>'}
   </table></div>`;
   let body;
@@ -569,6 +572,7 @@ members(){
     <input name="badge" placeholder="Badge" required>
     <select name="dept">${DEPTS.map(d=>`<option>${d}</option>`).join('')}</select>
     <select name="rank">${ranksList().map(r=>`<option>${r}</option>`).join('')}</select>
+    <select name="position"><option value="">No position</option>${positionsList().map(p=>`<option>${p}</option>`).join('')}</select>
     <select name="division">${divsList().map(d=>`<option>${d}</option>`).join('')}</select>
     <button class="btn">Add Member</button>
   </form>
@@ -724,6 +728,7 @@ command(){
   <div style="margin-top:10px"><b class="note">Divisions with Command access</b><div class="sbgrid">${divsList().map(d=>`<label style="font-size:12px"><input type="checkbox" ${cmdDivsList().includes(d)?'checked':''} onchange="toggleCmdDiv('${esc(d)}')"> ${esc(d)}</label>`).join('')}</div></div>
   <div style="margin-top:10px"><form class="inline" style="margin:0" onsubmit="return addCustomRank(event)"><input name="v" placeholder="Add custom rank"><button class="btn sec">Add Rank</button></form></div>
   <div style="margin-top:6px"><form class="inline" style="margin:0" onsubmit="return addCustomDiv(event)"><input name="v" placeholder="Add custom division"><button class="btn sec">Add Division</button></form></div>
+  <div style="margin-top:6px"><form class="inline" style="margin:0" onsubmit="return addCustomPos(event)"><input name="v" placeholder="Add custom position/title"><button class="btn sec">Add Position</button></form></div>
   </div>`:'';
   return `<h1>Command Panel</h1><div class="sub">Restricted to ranks/divisions granted Command access, and Admin.</div>${cmdOnly(body)}${perm_ui}`;
 }
@@ -750,7 +755,7 @@ window.renderView=renderView;
 // ================= ACTIONS =================
 window.setAnn=()=>{if(!canCmd())return;log('Announcement updated.');saveMeta({announcement:document.getElementById('ann').value});};
 window.toggleOnline=()=>{if(!canCmd())return;const v=!meta.online;log('SAPD status changed to '+(v?'ONLINE':'OFFLINE')+'.');saveMeta({online:v});};
-window.addMember=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('members',{name:f.name.value,address:f.address.value,phone:f.phone.value,callsign:f.callsign.value,badge:f.badge.value,dept:f.dept.value,rank:f.rank.value,division:f.division.value,promo:[]});log('New member added: '+f.name.value);done(f);return false;};
+window.addMember=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('members',{name:f.name.value,address:f.address.value,phone:f.phone.value,callsign:f.callsign.value,badge:f.badge.value,dept:f.dept.value,rank:f.rank.value,position:f.position.value,division:f.division.value,promo:[]});log('New member added: '+f.name.value);done(f);return false;};
 window.addMdt=(e)=>{e.preventDefault();const f=e.target;addDoc_('mdt',{name:f.name.value,wanted:f.wanted.value==='true',criminal:f.criminal.value,arrests:f.arrests.value,tickets:f.tickets.value,evidence:f.evidence.value,notes:f.notes.value,createdBy:me.uid});log('MDT record added for '+f.name.value);done(f);return false;};
 window.addDispatch=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('dispatch',{code:f.code.value,type:f.type.value,loc:f.loc.value,priority:f.priority.value,unit:f.unit.value,status:f.status.value,createdBy:me.uid,ts:Date.now(),alert:f.alert.value});log('New dispatch: '+f.code.value+' - '+f.type.value);done(f);return false;};
 window.setDispStatus=(id,st)=>{if(!canCmd())return;updDoc_('dispatch',id,{status:st});};
@@ -784,6 +789,8 @@ window.toggleCmdRank=(r)=>{if(!isAdmin())return;const cur=cmdRanksList();const n
 window.toggleCmdDiv=(d)=>{if(!isAdmin())return;const cur=cmdDivsList();const next=cur.includes(d)?cur.filter(x=>x!==d):[...cur,d];setDoc(doc(fdb,'meta','perm'),{cmdDivisions:next},{merge:true});};
 window.addCustomRank=(e)=>{e.preventDefault();if(!isAdmin())return false;const v=e.target.v.value.trim();if(v)setDoc(doc(fdb,'meta','perm'),{ranks:arrayUnion(v)},{merge:true});done(e.target);return false;};
 window.addCustomDiv=(e)=>{e.preventDefault();if(!isAdmin())return false;const v=e.target.v.value.trim();if(v)setDoc(doc(fdb,'meta','perm'),{divisions:arrayUnion(v)},{merge:true});done(e.target);return false;};
+window.addCustomPos=(e)=>{e.preventDefault();if(!isAdmin())return false;const v=e.target.v.value.trim();if(v)setDoc(doc(fdb,'meta','perm'),{positions:arrayUnion(v)},{merge:true});done(e.target);return false;};
+window.setPosition=(id,pos)=>{if(!canCmd())return;const m=cache.members.find(x=>x.id===id);log(m.name+' assigned position: '+(pos||'none'));updDoc_('members',id,{position:pos});};
 window.setRank=(uid,rank)=>{if(!rank||!canCmd())return;updDoc_('users',uid,{rank}).then(()=>log('Account rank changed to '+rank+'.'));};
 </script>
 </body>
