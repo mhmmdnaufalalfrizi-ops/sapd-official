@@ -106,7 +106,7 @@ button.btn.danger{background:var(--red);color:#2a0d0d}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
-import { getFirestore, doc, setDoc, updateDoc, deleteDoc, addDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, updateDoc, deleteDoc, addDoc, collection, onSnapshot, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDnVNbwNlCJTBB-ksAbAXAMqlwQ8P4W52g",
@@ -136,15 +136,15 @@ const freqOptions=sel=>(sel?'':'<option value="">— select frequency —</optio
 const COLS=["members","mdt","dispatch","reports","equip","vehicles","academy"];
 const stPill=s=>s==="On Duty"?"duty":s==="Busy"?"leave":"off";
 const vPill=s=>s==="In Use"?"use":s==="Maintenance"?"maint":"avail";
-const uOf=m=>cache.users.find(u=>u.memberId===m.id);
+const uOf=m=>cache.users.find(u=>u.id===m.id||u.memberId===m.id);
 const stOf=m=>(uOf(m)||{}).status||"Off Duty";
 const hrsOf=m=>(+(uOf(m)||{}).dutyHours||0).toFixed(1)+"h";
-let cache={members:[],mdt:[],dispatch:[],reports:[],equip:[],vehicles:[],academy:[],users:[],bodycams:[]};
-let meta={online:true,announcement:"Welcome to the SAPD system. Follow SOP at all times.",activity:["System initialized."]};
+let cache={members:[],mdt:[],dispatch:[],reports:[],equip:[],vehicles:[],academy:[],users:[],bodycams:[],activity:[]};
+let meta={online:true,announcement:"Welcome to the SAPD system. Follow SOP at all times."};
 let admin={punish:[],leave:[]};
 let me={uid:null,name:"",role:"pending"};
-let subs=[],bcSig='';
-function esc(s){return (s||"").toString().replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));}
+let subs=[],bcSig='',admUnsub=null;
+function esc(s){return (s||"").toString().replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));}
 
 // ================= SOUNDS =================
 let muted=false;try{muted=localStorage.getItem('sapd_mute')==='1';}catch(e){}
@@ -213,7 +213,7 @@ window.toggleMute=()=>{muted=!muted;try{localStorage.setItem('sapd_mute',muted?'
 window.askNotif=()=>{Notification.requestPermission().then(()=>renderView(true));};
 let lastAlert=0;
 window.sendAlert=async(k)=>{if(Date.now()-lastAlert<1500)return;lastAlert=Date.now();
-  const r=await addDoc(collection(fdb,'alerts'),{k,by:me.uid,name:me.name,ts:Date.now()});setTimeout(()=>deleteDoc(r).catch(()=>{}),30000);};
+  const r=await addDoc(collection(fdb,'alerts'),{k,by:me.uid,name:me.name,ts:Date.now()});toast('<b>✅ Sent: '+ALERTS[k].label+'</b>');setTimeout(()=>deleteDoc(r).catch(()=>{}),30000);};
 
 // ================= RADIO (walkie-talkie push-to-talk) =================
 let txing=false,wantTx=false,txFreq=null,rec=null,micStream=null,chunks=[],txTimer=null,rxQueue=[],rxPlaying=false,rxNow='',radioLog=[];
@@ -223,7 +223,7 @@ function getFreq(){
   try{const f=localStorage.getItem('sapd_freq_'+me.uid);if(f&&FREQS.find(x=>x.id===f)){state.freq=f;return f;}}catch(e){}
   return null;
 }
-window.setFreq=(id)=>{if(!id)return;state.freq=id;try{localStorage.setItem('sapd_freq_'+me.uid,id);}catch(e){}radioChirp('open');renderView(true);};
+window.setFreq=(id)=>{if(!id)return;state.freq=id;try{localStorage.setItem('sapd_freq_'+me.uid,id);}catch(e){}renderView(true);};
 let rctx=null;
 function RC(){if(!rctx)rctx=new (window.AudioContext||window.webkitAudioContext)();if(rctx.state==='suspended')rctx.resume();return rctx;}
 function noiseBuf(c,dur){const b=c.createBuffer(1,Math.max(1,Math.floor(c.sampleRate*dur)),c.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;return b;}
@@ -261,8 +261,6 @@ window.startTx=async(e,target)=>{
   try{
     if(!micStream)micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
     if(!wantTx)return;
-    radioChirp('open');await new Promise(r=>setTimeout(r,140));
-    if(!wantTx)return;
     const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||'';
     rec=new MediaRecorder(micStream,mime?{mimeType:mime,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});
     chunks=[];rec.ondataavailable=ev=>{if(ev.data&&ev.data.size)chunks.push(ev.data);};
@@ -270,7 +268,7 @@ window.startTx=async(e,target)=>{
     rec.start();txing=true;txFreq=fq;txTimer=setTimeout(stopTx,30000);renderView(true);
   }catch(err){wantTx=false;toast('<b>Microphone unavailable</b><br><span class="note">'+esc(err.name||err.message)+'</span>');}
 };
-window.stopTx=()=>{wantTx=false;clearTimeout(txTimer);if(txing&&rec&&rec.state!=='inactive'){rec.stop();radioChirp('close');}txing=false;renderView(true);};
+window.stopTx=()=>{wantTx=false;clearTimeout(txTimer);if(txing&&rec&&rec.state!=='inactive'){rec.stop();}txing=false;renderView(true);};
 function sendClip(fq){
   const blob=new Blob(chunks,{type:(rec&&rec.mimeType)||'audio/webm'});if(blob.size<1500)return;
   const fr=new FileReader();
@@ -360,7 +358,7 @@ window.unwatchCam=async(hostUid)=>{
 };
 
 // ================= AUTH =================
-window.authState={mode:'login',name:''};
+window.authState={mode:'login',name:'',address:'',phone:'',callsign:'',badge:''};
 const cleanName=v=>(v||'').trim().replace(/\s+/g,' ');
 const nameToEmail=v=>{const k=cleanName(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'');return k?k+'@sapd.example.com':'';};
 const authMsg=c=>({'auth/invalid-credential':'Wrong character name or password.','auth/invalid-login-credentials':'Wrong character name or password.','auth/user-not-found':'Wrong character name or password.','auth/wrong-password':'Wrong character name or password.','auth/email-already-in-use':'That character name is already registered.','auth/weak-password':'Password must be at least 6 characters.','auth/too-many-requests':'Too many attempts, try again later.','auth/invalid-email':'Invalid character name (use letters/numbers).'}[c]||('Error: '+c));
@@ -377,6 +375,10 @@ function renderAuth(err){
     <div class="switch" onclick="authState.mode='signup';renderAuthWin()">No account yet? Sign up</div>` : `
     <h2>🚔 Sign Up</h2><div class="sub">New accounts must be approved by an admin before use.</div>
     <div id="autherr">${err||''}</div>${nm}
+    <input id="a_addr" placeholder="Address" value="${esc(authState.address)}">
+    <input id="a_phone" placeholder="Phone number" value="${esc(authState.phone)}">
+    <input id="a_call" placeholder="Callsign (e.g. Adam-21)" value="${esc(authState.callsign)}">
+    <input id="a_badge" placeholder="Badge number" value="${esc(authState.badge)}">
     <input id="a_pass" type="password" placeholder="Password (min 6 characters)" onkeydown="if(event.key==='Enter')doSignup()">
     <button class="btn" onclick="doSignup()">Sign up</button>
     <div class="switch" onclick="authState.mode='login';renderAuthWin()">Already have an account? Login</div>`;
@@ -388,13 +390,18 @@ window.doLogin=async()=>{
   try{await signInWithEmailAndPassword(auth,em,document.getElementById('a_pass').value);}catch(e){renderAuth(authMsg(e.code));}
 };
 window.doSignup=async()=>{
-  authState.name=cleanName(document.getElementById('a_name').value);const em=nameToEmail(authState.name);
+  const g=id=>cleanName(document.getElementById(id).value);
+  Object.assign(authState,{name:g('a_name'),address:g('a_addr'),phone:g('a_phone'),callsign:g('a_call'),badge:g('a_badge')});
+  const em=nameToEmail(authState.name);
   if(!em){renderAuth('Enter your character name.');return;}
-  try{const cred=await createUserWithEmailAndPassword(auth,em,document.getElementById('a_pass').value);
-    await setDoc(doc(fdb,'users',cred.user.uid),{name:authState.name,role:'pending'});}
-  catch(e){renderAuth(authMsg(e.code));}
+  if(!authState.address||!authState.phone||!authState.callsign||!authState.badge){renderAuth('Fill in address, phone, callsign and badge.');return;}
+  try{
+    const cred=await createUserWithEmailAndPassword(auth,em,document.getElementById('a_pass').value),uid=cred.user.uid;
+    await setDoc(doc(fdb,'users',uid),{name:authState.name,role:'pending'});
+    await setDoc(doc(fdb,'members',uid),{name:authState.name,address:authState.address,phone:authState.phone,callsign:authState.callsign,badge:authState.badge,rank:'',division:'',promo:[]});
+  }catch(e){renderAuth(authMsg(e.code));}
 };
-window.doLogout=()=>{stopBodycam();Object.keys(bcViews).forEach(unwatchCam);subs.forEach(u=>u());subs=[];state.freq=null;signOut(auth);};
+window.doLogout=()=>{stopBodycam();Object.keys(bcViews).forEach(unwatchCam);subs.forEach(u=>u());subs=[];if(admUnsub){admUnsub();admUnsub=null;}state.freq=null;signOut(auth);};
 
 // ================= DATA WIRING =================
 function subscribeAll(){
@@ -412,20 +419,24 @@ function subscribeAll(){
       if(d.online!==undefined&&d.online!==meta.online)alertSimple('general','SAPD is now '+(d.online?'ONLINE':'OFFLINE'));}
     meta={...meta,...d};}
     metaFirst=false;renderView();}));
-  subs.push(onSnapshot(doc(fdb,'admin_log','log'),s=>{if(s.exists())admin={...admin,...s.data()};renderView();}));
+  subs.push(onSnapshot(query(collection(fdb,'activity'),orderBy('ts','desc'),limit(8)),snap=>{cache.activity=snap.docs.map(d=>d.data());renderView();}));
   ['alerts','radio'].forEach(c=>{let first=true;subs.push(onSnapshot(collection(fdb,c),snap=>{
     snap.docChanges().forEach(ch=>{if(ch.type!=='added')return;const d=ch.doc.data();
       if(first){if(Date.now()-(d.ts||0)>120000)deleteDoc(ch.doc.ref).catch(()=>{});return;}
       if(Math.abs(Date.now()-(d.ts||0))>90000)return;
-      if(c==='alerts')alertBroadcast(d);else receiveRadio(d);});
+      if(c==='alerts'){if(d.by!==me.uid)alertBroadcast(d);}else receiveRadio(d);});
     first=false;}));});
   subs.push(onSnapshot(collection(fdb,'bodycams'),snap=>{
     cache.bodycams=snap.docs.map(d=>({id:d.id,...d.data()}));
     Object.keys(bcViews).forEach(u=>{if(!cache.bodycams.find(b=>b.id===u))unwatchCam(u);});
     const sig=cache.bodycams.map(b=>b.id).sort().join();if(sig!==bcSig){bcSig=sig;renderView();}}));
 }
+function syncAdminSub(){
+  if(canCmd()&&!admUnsub){admUnsub=onSnapshot(doc(fdb,'admin_log','log'),s=>{if(s.exists())admin={...admin,...s.data()};renderView();},()=>{admUnsub=null;});}
+  else if(!canCmd()&&admUnsub){admUnsub();admUnsub=null;}
+}
 onAuthStateChanged(auth,user=>{
-  subs.forEach(u=>u());subs=[];
+  subs.forEach(u=>u());subs=[];if(admUnsub){admUnsub();admUnsub=null;}
   if(!user){renderAuth();return;}
   onSnapshot(doc(fdb,'users',user.uid),s=>{
     me=s.exists()?{uid:user.uid,...s.data()}:{uid:user.uid,name:user.email,role:'pending'};
@@ -438,7 +449,7 @@ onAuthStateChanged(auth,user=>{
       document.getElementById('authwrap').style.display='none';
       document.getElementById('nav').style.display='flex';
       document.getElementById('main').style.display='block';
-      if(!subs.length){subscribeAll();if(!getFreq())toast('<b>📻 Select your radio frequency</b><br><span class="note">Use the Freq dropdown in the top bar.</span>');}
+      syncAdminSub();if(!subs.length){subscribeAll();if(!getFreq())toast('<b>📻 Select your radio frequency</b><br><span class="note">Use the Freq dropdown in the top bar.</span>');}
       renderView();
     }
   });
@@ -446,11 +457,11 @@ onAuthStateChanged(auth,user=>{
 
 // ================= WRITE HELPERS =================
 async function addDoc_(col,obj){await addDoc(collection(fdb,col),obj);}
-async function delDoc_(col,id){await deleteDoc(doc(fdb,col,id));}
+async function delDoc_(col,id){if(!canCmd())return;await deleteDoc(doc(fdb,col,id));}
 async function updDoc_(col,id,patch){await updateDoc(doc(fdb,col,id),patch);}
 async function saveMeta(patch){meta={...meta,...patch};await setDoc(doc(fdb,'meta','app'),meta);}
 async function saveAdmin(patch){admin={...admin,...patch};await setDoc(doc(fdb,'admin_log','log'),admin);}
-function log(msg){saveMeta({activity:[msg,...meta.activity].slice(0,8)});}
+function log(msg){addDoc(collection(fdb,'activity'),{msg,ts:Date.now(),by:me.uid}).catch(()=>{});}
 window.delDoc=delDoc_;
 
 const main=document.getElementById('content');
@@ -476,7 +487,7 @@ function cmdOnly(html){return canCmd()?html:'<div class="ro-banner">This section
 const views={
 dash(){
   const duty=cache.users.filter(u=>u.status==="On Duty"),busy=cache.users.filter(u=>u.status==="Busy");
-  const nm=u=>(cache.members.find(m=>m.id===u.memberId)||{}).callsign||u.name;
+  const nm=u=>(cache.members.find(m=>m.id===(u.memberId||u.id))||{}).callsign||u.name;
   const avail=cache.vehicles.filter(v=>v.status==="Available").length;
   const calls=cache.dispatch.filter(d=>d.status==='ACTIVE').length;
   return `<h1>Dashboard</h1><div class="sub">Current SAPD operations overview.</div>
@@ -490,25 +501,32 @@ dash(){
   </div>
   <div class="card" style="margin-bottom:16px"><b>👮 Active Officers</b><div class="note">${[...duty,...busy].map(u=>esc(nm(u))+' ('+u.status+')').join(' • ')||'Nobody is on duty.'}</div></div>
   <div class="card" style="margin-bottom:16px"><b>📢 Latest Announcement</b>
-    <textarea id="ann" style="margin-top:8px">${esc(meta.announcement)}</textarea>
-    <div style="margin-top:8px"><button class="btn sec" onclick="setAnn()">Save Announcement</button>
+    <textarea id="ann" ${canCmd()?'':'readonly'} style="margin-top:8px">${esc(meta.announcement)}</textarea>
+    <div style="margin-top:8px;${canCmd()?'':'display:none'}"><button class="btn sec" onclick="setAnn()">Save Announcement</button>
     <button class="btn sec" onclick="toggleOnline()">Set SAPD ${meta.online?'Offline':'Online'}</button></div>
   </div>
-  <div class="card"><b>🕓 Recent Activity</b><ul>${meta.activity.map(a=>`<li class="note">${esc(a)}</li>`).join('')}</ul></div>`;
+  <div class="card"><b>🕓 Recent Activity</b><ul>${cache.activity.map(a=>`<li class="note">${esc(a.msg)}</li>`).join('')}</ul></div>`;
 },
 members(){
-  return `<h1>Members</h1><div class="sub">Officer identities. Duty status is set by each member using "My status" in the top bar (Command must link each account to a roster entry).</div>
+  return `<h1>Members</h1><div class="sub">Accounts join the roster automatically when they sign up. Rank and division are assigned by Command. Duty status is set by each member with "My status" in the top bar.</div>
+  ${(()=>{const mine=cache.members.find(x=>x.id===me.uid);const v=k=>esc(mine?mine[k]:'');
+    return `<div class="card" style="margin-bottom:14px"><b>🪪 ${mine?'My Profile':'Create My Roster Profile'}</b>
+    <form class="inline" style="margin:8px 0 0" onsubmit="return saveProfile(event)">
+      <input name="address" value="${v('address')}" placeholder="Address" required><input name="phone" value="${v('phone')}" placeholder="Phone" required>
+      <input name="callsign" value="${v('callsign')}" placeholder="Callsign" required><input name="badge" value="${v('badge')}" placeholder="Badge" required>
+      <button class="btn sec">Save Profile</button></form>
+    <div class="note">Rank and division are assigned by Command.</div></div>`;})()}
   <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addMember(event)">
-    <input name="name" placeholder="Character name" required><input name="cid" placeholder="Citizen ID" required>
+    <input name="name" placeholder="Character name" required><input name="address" placeholder="Address" required>
     <input name="phone" placeholder="Phone"><input name="callsign" placeholder="Callsign (Adam-21)">
     <input name="badge" placeholder="Badge" required>
     <select name="rank">${RANKS.map(r=>`<option>${r}</option>`).join('')}</select>
     <select name="division">${DIVS.map(d=>`<option>${d}</option>`).join('')}</select>
     <button class="btn">Add Member</button>
   </form>
-  <div class="tblwrap"><table><tr><th>Name</th><th>CID</th><th>Phone</th><th>Callsign</th><th>Badge</th><th>Rank</th><th>Division</th><th>Status</th><th>Duty Hours</th><th>History</th><th></th></tr>
-  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td class="mono">${esc(m.cid)||'-'}</td><td>${esc(m.phone)||'-'}</td><td class="mono">${esc(m.callsign)||'-'}</td><td class="mono">${esc(m.badge)}</td>
-  <td>${esc(m.rank)}</td><td>${esc(m.division)}</td>
+  <div class="tblwrap"><table><tr><th>Name</th><th>Address</th><th>Phone</th><th>Callsign</th><th>Badge</th><th>Rank</th><th>Division</th><th>Status</th><th>Duty Hours</th><th>History</th><th></th></tr>
+  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.address)||'-'}</td><td>${esc(m.phone)||'-'}</td><td class="mono">${esc(m.callsign)||'-'}</td><td class="mono">${esc(m.badge)}</td>
+  <td>${esc(m.rank)||'<span class="note">Unassigned</span>'}</td><td>${esc(m.division)||'<span class="note">Unassigned</span>'}</td>
   <td><span class="pill ${stPill(stOf(m))}">${stOf(m)}</span>${uOf(m)?'':'<br><span class="note">account not linked</span>'}</td>
   <td>${hrsOf(m)}</td><td class="note">${(m.promo||[]).join('; ')||'-'}</td>
   <td>${canCmd()?`<span class="del" onclick="delDoc('members','${m.id}')">Delete</span>`:''}</td></tr>`).join('')}
@@ -530,12 +548,12 @@ mdt(){
   <td>${r.wanted?'<span class="pill high">WANTED</span>':'<span class="pill low">Clear</span>'}</td>
   <td class="note">${esc(r.criminal)||'-'}</td><td class="note">${esc(r.arrests)||'-'}</td><td class="note">${esc(r.tickets)||'-'}</td>
   <td class="note">${esc(r.evidence)||'-'}</td><td class="note">${esc(r.notes)||'-'}</td>
-  <td><span class="del" onclick="delDoc('mdt','${r.id}')">Delete</span></td></tr>`).join('')}
+  <td>${canCmd()?`<span class="del" onclick="delDoc('mdt','${r.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 dispatch(){
-  return `<h1>Dispatch</h1><div class="sub">Active calls and dispatch history. Creating a call plays its alert sound on every officer's device (including yours).</div>
-  <form class="inline" onsubmit="return addDispatch(event)">
+  return `<h1>Dispatch</h1><div class="sub">Active calls and dispatch history. Creating a call plays its alert sound on every officer's device. Only Command can create or update calls.</div>
+  <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addDispatch(event)">
     <input name="code" placeholder="Code (10-31)" required><input name="type" placeholder="Type (Robbery)" required>
     <input name="loc" placeholder="Location" required>
     <select name="priority"><option>LOW</option><option selected>MEDIUM</option><option>HIGH</option></select>
@@ -548,8 +566,8 @@ dispatch(){
   ${[...cache.dispatch].sort((a,b)=>(b.ts||0)-(a.ts||0)).map(d=>`<tr><td class="mono">${(ALERTS[d.alert]||{}).icon||''} ${esc(d.code)}</td><td>${esc(d.type)}</td><td>${esc(d.loc)}</td>
   <td><span class="pill ${d.priority==='HIGH'?'high':d.priority==='MEDIUM'?'med':'low'}">${d.priority}</span></td>
   <td>${esc(d.unit)}</td>
-  <td><span class="pill ${d.status==='ACTIVE'?'active':'avail'}">${d.status}</span> <select onchange="setDispStatus('${d.id}',this.value)">${['ACTIVE','RESPONDING','CLOSED'].map(x=>`<option ${x===d.status?'selected':''}>${x}</option>`).join('')}</select></td>
-  <td><span class="del" onclick="delDoc('dispatch','${d.id}')">Delete</span></td></tr>`).join('')}
+  <td><span class="pill ${d.status==='ACTIVE'?'active':'avail'}">${d.status}</span> ${canCmd()?`<select onchange="setDispStatus('${d.id}',this.value)">${['ACTIVE','RESPONDING','CLOSED'].map(x=>`<option ${x===d.status?'selected':''}>${x}</option>`).join('')}</select>`:''}</td>
+  <td>${canCmd()?`<span class="del" onclick="delDoc('dispatch','${d.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 radio(){
@@ -592,7 +610,7 @@ reports(){
   </form>
   <div class="tblwrap"><table><tr><th>Date</th><th>Type</th><th>Officer</th><th>Subject</th><th>Details</th><th></th></tr>
   ${cache.reports.map(r=>`<tr><td class="note">${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.officer)}</td><td>${esc(r.subject)||'-'}</td>
-  <td class="note">${esc(r.details)}</td><td><span class="del" onclick="delDoc('reports','${r.id}')">Delete</span></td></tr>`).join('')}
+  <td class="note">${esc(r.details)}</td><td>${canCmd()?`<span class="del" onclick="delDoc('reports','${r.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 divisions(){
@@ -606,7 +624,7 @@ divisions(){
 },
 equip(){
   return `<h1>Equipment / Armory</h1><div class="sub">Inventory of weapons, armor, radios, evidence kits and vehicles.</div>
-  <form class="inline" onsubmit="return addEquip(event)">
+  <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addEquip(event)">
     <input name="item" placeholder="Item name" required>
     <select name="cat"><option>Weapon</option><option>Armor</option><option>Radio</option><option>Evidence Kit</option><option>Vehicle</option></select>
     <select name="status"><option>Available</option><option>Checked Out</option></select>
@@ -615,24 +633,24 @@ equip(){
   <div class="tblwrap"><table><tr><th>Item</th><th>Category</th><th>Status</th><th>Held by</th><th></th></tr>
   ${cache.equip.map(e=>`<tr><td>${esc(e.item)}</td><td>${esc(e.cat)}</td>
   <td><span class="pill ${e.status==='Available'?'avail':'use'}">${e.status}</span></td><td>${esc(e.holder)||'-'}</td>
-  <td><span class="del" onclick="toggleEquip('${e.id}')">Check out / Return</span> &nbsp;<span class="del" onclick="delDoc('equip','${e.id}')">Delete</span></td></tr>`).join('')}
+  <td>${canCmd()?`<span class="del" onclick="toggleEquip('${e.id}')">Check out / Return</span> &nbsp;`:''}${canCmd()?`<span class="del" onclick="delDoc('equip','${e.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 vehicles(){
   return `<h1>Vehicle Management</h1><div class="sub">Add units and set their status from the dropdown.</div>
-  <form class="inline" onsubmit="return addVeh(event)">
+  <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addVeh(event)">
     <input name="unit" placeholder="Unit (SAPD-04)" required><input name="model" placeholder="Model" required>
     <select name="status">${VEH.map(x=>`<option>${x}</option>`).join('')}</select><button class="btn">Add Unit</button>
   </form>
   <div class="tblwrap"><table><tr><th>Unit</th><th>Model</th><th>Status</th><th></th></tr>
   ${cache.vehicles.map(v=>`<tr><td class="mono">${esc(v.unit)}</td><td>${esc(v.model)}</td>
-  <td><span class="pill ${vPill(v.status)}">${esc(v.status)}</span> <select onchange="setVehStatus('${v.id}',this.value)">${VEH.map(x=>`<option ${x===v.status?'selected':''}>${x}</option>`).join('')}</select></td>
-  <td><span class="del" onclick="delDoc('vehicles','${v.id}')">Delete</span></td></tr>`).join('')}
+  <td><span class="pill ${vPill(v.status)}">${esc(v.status)}</span> ${canCmd()?`<select onchange="setVehStatus('${v.id}',this.value)">${VEH.map(x=>`<option ${x===v.status?'selected':''}>${x}</option>`).join('')}</select>`:''}</td>
+  <td>${canCmd()?`<span class="del" onclick="delDoc('vehicles','${v.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 academy(){
   return `<h1>Academy</h1><div class="sub">Trainee enrollment, training and graduation.</div>
-  <form class="inline" onsubmit="return addTrainee(event)">
+  <form class="inline" style="${canCmd()?'':'display:none'}" onsubmit="return addTrainee(event)">
     <input name="name" placeholder="Trainee name" required>
     <select name="status"><option>Registered</option><option>In Training</option><option>Graduated</option><option>Failed</option></select>
     <input name="score" placeholder="Exam score"><button class="btn">Enroll Trainee</button>
@@ -640,12 +658,12 @@ academy(){
   <div class="note">Curriculum: Basic Law, Patrol SOP, Firearms Handling, First Aid. Training schedule: every Saturday 20:00 server time.</div>
   <div class="tblwrap"><table><tr><th>Name</th><th>Status</th><th>Exam Score</th><th></th></tr>
   ${cache.academy.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="pill ${a.status==='Graduated'?'avail':a.status==='Failed'?'high':'med'}">${a.status}</span></td>
-  <td>${esc(a.score)}</td><td><span class="del" onclick="delDoc('academy','${a.id}')">Delete</span></td></tr>`).join('')}
+  <td>${esc(a.score)}</td><td>${canCmd()?`<span class="del" onclick="delDoc('academy','${a.id}')">Delete</span>`:''}</td></tr>`).join('')}
   </table></div>`;
 },
 command(){
   const body=`<div class="tblwrap"><table><tr><th>Name</th><th>Rank</th><th>Division</th><th>Change Rank (roster)</th><th>Move Division</th></tr>
-  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.rank)}</td><td>${esc(m.division)}</td>
+  ${cache.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.rank)||'<span class="note">Unassigned</span>'}</td><td>${esc(m.division)||'<span class="note">Unassigned</span>'}</td>
   <td><form class="inline" style="margin:0;padding:0;background:none;border:none" onsubmit="return promote(event,'${m.id}')"><select name="rank" style="width:170px"><option value="">-select rank-</option>${RANKS.map(r=>`<option ${r===m.rank?'selected':''}>${r}</option>`).join('')}</select><button class="btn sec" style="padding:5px 10px">Set</button></form></td>
   <td><select onchange="reassign('${m.id}',this.value)"><option value="">-select-</option>${DIVS.map(d=>`<option ${d===m.division?'selected':''}>${d}</option>`).join('')}</select></td></tr>`).join('')}
   </table></div>
@@ -664,9 +682,9 @@ command(){
   ${cache.users.map(u=>`<tr><td>${esc(u.name)}</td>
   <td><span class="pill ${u.role}">${u.role}</span> <select ${isAdmin()?'':'disabled'} onchange="setRole('${u.id}',this.value)"><option value="">change</option><option value="pending">pending</option><option value="officer">officer</option><option value="admin">admin</option></select></td>
   <td>${esc(u.rank||'-')}<br><select onchange="setRank('${u.id}',this.value)"><option value="">set rank</option>${RANKS.map(r=>`<option>${r}</option>`).join('')}</select></td>
-  <td><select onchange="setLink('${u.id}',this.value)"><option value="">— not linked —</option>${cache.members.map(m=>`<option value="${m.id}" ${m.id===u.memberId?'selected':''}>${esc(m.name)}</option>`).join('')}</select></td></tr>`).join('')}
+  <td><select onchange="setLink('${u.id}',this.value)"><option value="">— not linked —</option>${cache.members.map(m=>`<option value="${m.id}" ${m.id===(u.memberId||u.id)?'selected':''}>${esc(m.name)}</option>`).join('')}</select></td></tr>`).join('')}
   </table></div></div>
-  <div class="card" style="margin-top:16px"><b>🕓 Activity Log</b><ul>${meta.activity.map(a=>`<li class="note">${esc(a)}</li>`).join('')}</ul></div>`;
+  <div class="card" style="margin-top:16px"><b>🕓 Activity Log</b><ul>${cache.activity.map(a=>`<li class="note">${esc(a.msg)}</li>`).join('')}</ul></div>`;
   return `<h1>Command Panel</h1><div class="sub">Restricted to Police Commander rank and above, and Admin.</div>${cmdOnly(body)}`;
 }
 };
@@ -690,18 +708,18 @@ document.querySelectorAll('#nav button[data-t]').forEach(b=>b.onclick=()=>{state
 window.renderView=renderView;
 
 // ================= ACTIONS =================
-window.setAnn=()=>{log('Announcement updated.');saveMeta({announcement:document.getElementById('ann').value});};
-window.toggleOnline=()=>{const v=!meta.online;log('SAPD status changed to '+(v?'ONLINE':'OFFLINE')+'.');saveMeta({online:v});};
-window.addMember=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('members',{name:f.name.value,cid:f.cid.value,phone:f.phone.value,callsign:f.callsign.value,badge:f.badge.value,rank:f.rank.value,division:f.division.value,promo:[]});log('New member added: '+f.name.value);done(f);return false;};
+window.setAnn=()=>{if(!canCmd())return;log('Announcement updated.');saveMeta({announcement:document.getElementById('ann').value});};
+window.toggleOnline=()=>{if(!canCmd())return;const v=!meta.online;log('SAPD status changed to '+(v?'ONLINE':'OFFLINE')+'.');saveMeta({online:v});};
+window.addMember=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('members',{name:f.name.value,address:f.address.value,phone:f.phone.value,callsign:f.callsign.value,badge:f.badge.value,rank:f.rank.value,division:f.division.value,promo:[]});log('New member added: '+f.name.value);done(f);return false;};
 window.addMdt=(e)=>{e.preventDefault();const f=e.target;addDoc_('mdt',{name:f.name.value,wanted:f.wanted.value==='true',criminal:f.criminal.value,arrests:f.arrests.value,tickets:f.tickets.value,evidence:f.evidence.value,notes:f.notes.value,createdBy:me.uid});log('MDT record added for '+f.name.value);done(f);return false;};
-window.addDispatch=(e)=>{e.preventDefault();const f=e.target;addDoc_('dispatch',{code:f.code.value,type:f.type.value,loc:f.loc.value,priority:f.priority.value,unit:f.unit.value,status:f.status.value,createdBy:me.uid,ts:Date.now(),alert:f.alert.value});log('New dispatch: '+f.code.value+' - '+f.type.value);done(f);return false;};
-window.setDispStatus=(id,st)=>{updDoc_('dispatch',id,{status:st});};
+window.addDispatch=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('dispatch',{code:f.code.value,type:f.type.value,loc:f.loc.value,priority:f.priority.value,unit:f.unit.value,status:f.status.value,createdBy:me.uid,ts:Date.now(),alert:f.alert.value});log('New dispatch: '+f.code.value+' - '+f.type.value);done(f);return false;};
+window.setDispStatus=(id,st)=>{if(!canCmd())return;updDoc_('dispatch',id,{status:st});};
 window.addReport=(e)=>{e.preventDefault();const f=e.target;addDoc_('reports',{type:f.type.value,officer:f.officer.value,subject:f.subject.value,details:f.details.value,date:new Date().toLocaleString()});log('Report filed: '+f.type.value+' by '+f.officer.value);done(f);return false;};
-window.addEquip=(e)=>{e.preventDefault();const f=e.target;addDoc_('equip',{item:f.item.value,cat:f.cat.value,status:f.status.value,holder:f.holder.value});done(f);return false;};
-window.toggleEquip=(id)=>{const it=cache.equip.find(x=>x.id===id);const ns=it.status==='Available'?'Checked Out':'Available';log((ns==='Checked Out'?'Item checked out: ':'Item returned: ')+it.item);updDoc_('equip',id,{status:ns});};
-window.addVeh=(e)=>{e.preventDefault();const f=e.target;addDoc_('vehicles',{unit:f.unit.value,model:f.model.value,status:f.status.value});done(f);return false;};
-window.setVehStatus=(id,st)=>{const v=cache.vehicles.find(x=>x.id===id);log(v.unit+' → '+st);updDoc_('vehicles',id,{status:st});};
-window.addTrainee=(e)=>{e.preventDefault();const f=e.target;addDoc_('academy',{name:f.name.value,status:f.status.value,score:f.score.value||'-'});done(f);return false;};
+window.addEquip=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('equip',{item:f.item.value,cat:f.cat.value,status:f.status.value,holder:f.holder.value});done(f);return false;};
+window.toggleEquip=(id)=>{if(!canCmd())return;const it=cache.equip.find(x=>x.id===id);const ns=it.status==='Available'?'Checked Out':'Available';log((ns==='Checked Out'?'Item checked out: ':'Item returned: ')+it.item);updDoc_('equip',id,{status:ns});};
+window.addVeh=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('vehicles',{unit:f.unit.value,model:f.model.value,status:f.status.value});done(f);return false;};
+window.setVehStatus=(id,st)=>{if(!canCmd())return;const v=cache.vehicles.find(x=>x.id===id);log(v.unit+' → '+st);updDoc_('vehicles',id,{status:st});};
+window.addTrainee=(e)=>{e.preventDefault();if(!canCmd())return false;const f=e.target;addDoc_('academy',{name:f.name.value,status:f.status.value,score:f.score.value||'-'});done(f);return false;};
 window.promote=(e,id)=>{e.preventDefault();if(!canCmd())return false;const rank=e.target.rank.value;if(!rank)return false;const m=cache.members.find(x=>x.id===id);const promo=[...(m.promo||[]),m.rank+' → '+rank+' ('+new Date().toLocaleDateString()+')'];log(m.name+' rank changed to '+rank);updDoc_('members',id,{rank,promo});return false;};
 window.reassign=(id,div)=>{if(!div||!canCmd())return;const m=cache.members.find(x=>x.id===id);log(m.name+' moved to '+div);updDoc_('members',id,{division:div});};
 window.addPunish=(e)=>{e.preventDefault();const f=e.target;const list=[{id:'p'+Date.now(),name:f.name.value,reason:f.reason.value},...admin.punish];log('Punishment: '+f.name.value+' - '+f.reason.value);saveAdmin({punish:list});done(f);return false;};
@@ -712,6 +730,11 @@ window.setMyStatus=(st)=>{const p={status:st};
   if(me.status==='On Duty'&&me.dutyStart){p.dutyHours=Math.round(((+me.dutyHours||0)+(Date.now()-me.dutyStart)/36e5)*10)/10;p.dutyStart=null;}
   if(st==='On Duty')p.dutyStart=Date.now();
   updDoc_('users',me.uid,p).then(()=>log(me.name+' → '+st));};
+window.saveProfile=async(e)=>{e.preventDefault();const f=e.target;
+  const p={address:f.address.value.trim(),phone:f.phone.value.trim(),callsign:f.callsign.value.trim(),badge:f.badge.value.trim()};
+  try{if(cache.members.find(x=>x.id===me.uid))await updDoc_('members',me.uid,p);else await setDoc(doc(fdb,'members',me.uid),{name:me.name,...p,rank:'',division:'',promo:[]});toast('<b>Profile saved</b>');}
+  catch(err){toast('<b>Could not save profile</b>');}
+  return false;};
 window.setLink=(uid,mid)=>{if(!canCmd())return;updDoc_('users',uid,{memberId:mid});};
 window.setRole=(uid,role)=>{if(!role||!isAdmin())return;updDoc_('users',uid,{role}).then(()=>log('Account role changed to '+role+'.'));};
 window.setRank=(uid,rank)=>{if(!rank||!canCmd())return;updDoc_('users',uid,{rank}).then(()=>log('Account rank changed to '+rank+'.'));};
